@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -e
+
+bold() {
+	if [ -x "$(command -v tput)" ]
+	then
+		tput bold
+	fi
+
+	echo "$@"
+
+	if [ -x "$(command -v tput)" ]
+	then
+		tput sgr0
+	fi
+}
+
+usage() {
+	case "$1" in
+		view)
+			echo "View and Filter GitHub Notifications"
+			echo ""
+			bold "USAGE"
+			echo "  gh notifications view [ -h | --help ]"
+			echo "  gh notifications view [ -r | --repo REPO ]"
+			echo "  gh notifications view [ -t | --type TYPE ]"
+			echo ""
+			bold "FLAGS"
+			echo "  -h, --help:    Show help for this command"
+			echo ""
+			bold "EXAMPLES"
+			echo "  gh notifications view --repo github/explore"
+			echo "  gh notifications view --type discussion"
+			echo ""
+		;;
+
+		done)
+			echo "Manage and Hide GitHub Notifications"
+			echo ""
+			bold "USAGE"
+			echo "  gh notifications done [ -h | --help ]"
+			echo "  gh notifications done [ -r | --repo REPO ]"
+			echo "  gh notifications done [ -t | --type TYPE ]"
+			echo "  gh notifications done [ THREADS ... ]"
+			echo ""
+			bold "FLAGS"
+			echo "  -h, --help:    Show help for this command"
+			echo ""
+			bold "EXAMPLES"
+			echo "  gh notifications done --repo github/explore"
+			echo "  gh notifications done --type discussion"
+			echo "  gh notifications done 1234,5678"
+			echo ""
+		;;
+
+		*)
+			echo "View and Manage GitHub Notifications"
+			echo ""
+			bold "USAGE"
+			echo "  gh notifications <command> [flags] [args ...]"
+			echo ""
+			bold "COMMANDS"
+			echo "  help:    Show this message"
+			echo "  view:    View notification(s)"
+			echo "  done:    Mark notification(s) as done"
+			echo ""
+			bold "FLAGS"
+			echo "  -h, --help:    Show help for command"
+			echo ""
+			bold "EXAMPLES"
+			echo ""
+			echo "  gh notifications view --type pull_request"
+			echo "  gh notifications done 123456789,123789560"
+			echo ""
+			bold "LEARN MORE"
+			echo "  gh notifications <command> --help"
+			echo "  gh notifications help <command>"
+			echo ""
+		;;
+	esac
+}
+
+err() {
+	if [ "${GITHUB_ACTIONS}" ]
+	then
+		echo "::error::$@"
+	else
+		echo "$@" 1>&2
+	fi
+}
+
+die() {
+	err "$@"
+	exit 1
+}
+
+filter_is_pull_request() {
+	jq '[ .[] | select( .subject.type == "PullRequest" ) ]'
+}
+
+filter_is_discussion() {
+	jq '[ .[] | select( .subject.type == "Discussion" ) ]'
+}
+
+filter_is_release() {
+	jq '[ .[] | select( .subject.type == "Release" ) ]'
+}
+
+filter_is_specific_repo() {
+	jq "[ .[] | select( .repository.full_name == \"${FILTER_REPO}\" ) ]"
+}
+
+filter_by_repo() {
+	if [ "${FILTER_REPO}" ]
+	then
+		case "${FILTER_REPO}" in
+			*/* ) filter_is_specific_repo ;;
+			*   ) die "repository must be specified as <owner>/<repo>" ;;
+		esac
+	else
+		cat
+	fi
+}
+
+filter_by_subject_type() {
+	if [ "${FILTER_TYPE}" ]
+	then
+		case "${FILTER_TYPE}" in
+			pr | pull_request ) filter_is_pull_request ;;
+			disc | discussion ) filter_is_discussion   ;;
+			release           ) filter_is_release      ;;
+			*                 ) die "unknown type '${FILTER_TYPE}'" ;;
+		esac
+	else
+		cat
+	fi
+}
+
+get_threads() {
+	gh api /notifications | filter_by_subject_type | filter_by_repo
+}
+
+tabulate_threads() {
+	jq \
+		--raw-output \
+		'.[] | ( .repository.full_name + "|" + .subject.type + "|" + .subject.title )' | \
+	column \
+		--table \
+		--separator "|" \
+		--table-columns \
+		"REPOSITORY,NOTIFICATION TYPE,TITLE"
+}
+
+main_view() {
+	while [ "$#" -gt 0 ]
+	do
+		case "$1" in
+			-h | --help ) usage view            ; exit  ;;
+
+			-r | --repo ) FILTER_REPO="$2"      ; shift ;;
+			--repo=*    ) FILTER_REPO="${1#*=}" ;       ;;
+
+			-t | --type ) FILTER_TYPE="$2"      ; shift ;;
+			--type=*    ) FILTER_TYPE="${1#*=}" ;       ;;
+
+			-*          ) die "unknown option '$1'"     ;;
+			*           ) die "unknown argument '$1'"   ;;
+		esac
+
+		shift
+	done
+
+	get_threads | tabulate_threads
+}
+
+main_done() {
+	die "UNIMPLEMENTED"
+}
+
+main() {
+	if [ "$#" -lt 1 ]
+	then
+		usage
+		exit 1
+	fi
+
+	COMMAND="$1"
+	shift
+
+	case "$COMMAND" in
+		-h | --help | help ) usage "$1"                               ;;
+		view | done        ) main_$COMMAND $*                         ;;
+		*                  ) usage ; die "unknown command '$COMMAND'" ;;
+	esac
+}
+
+main $@
+
