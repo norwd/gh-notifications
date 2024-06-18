@@ -26,7 +26,18 @@ usage() {
 			echo "  gh notifications view [ -t | --type TYPE ]"
 			echo ""
 			bold "FLAGS"
-			echo "  -h, --help:    Show help for this command"
+			echo "  -h, --help:         Show help for this command"
+			echo "  -r, --repo REPO:    Filter by repository"
+			echo "  -t, --type TYPE:    Filter by notification type"
+			echo ""
+			bold "TYPES"
+			echo "  pulls:          pull requests"
+			echo "  issues:         issues"
+			echo "  invites:        repository invites"
+			echo "  commits:        commits (comments or mentions)"
+			echo "  discussions:    discussions"
+			echo "  releases:       releases and tags"
+			echo "  checks:         check suite statuses"
 			echo ""
 			bold "EXAMPLES"
 			echo "  gh notifications view --repo github/explore"
@@ -94,50 +105,87 @@ die() {
 	exit 1
 }
 
+filter_is_subject_type() {
+	jq "[ .[] | select( .subject.type == \"${1}\" ) ]"
+}
+
 filter_is_pull_request() {
-	jq '[ .[] | select( .subject.type == "PullRequest" ) ]'
+	filter_is_subject_type "PullRequest"
 }
 
 filter_is_discussion() {
-	jq '[ .[] | select( .subject.type == "Discussion" ) ]'
+	filter_is_subject_type "Discussion"
 }
 
 filter_is_release() {
-	jq '[ .[] | select( .subject.type == "Release" ) ]'
+	filter_is_subject_type "Release"
 }
 
-filter_is_specific_repo() {
-	jq "[ .[] | select( .repository.full_name == \"${FILTER_REPO}\" ) ]"
+filter_is_issue() {
+	filter_is_subject_type "Issue"
+}
+
+filter_is_invite() {
+	filter_is_subject_type "RepositoryInvitation"
+}
+
+filter_is_commit() {
+	filter_is_subject_type "Commit"
+}
+
+filter_is_check_suite() {
+	filter_is_subject_type "CheckSuite"
+}
+
+filter_by_repo_full_name() {
+	jq "[ .[] | select( .repository.full_name == \"${1}\" ) ]"
+}
+
+filter_by_repo_name() {
+	jq "[ .[] | select( .repository.name == \"${1}\" ) ]"
 }
 
 filter_by_repo() {
-	if [ "${FILTER_REPO}" ]
+	if [ ! "${1}" ]
 	then
-		case "${FILTER_REPO}" in
-			*/* ) filter_is_specific_repo ;;
-			*   ) die "repository must be specified as <owner>/<repo>" ;;
-		esac
-	else
 		cat
+	elif echo "${1}" | grep -iEq '^[a-z0-9_.-]+/[a-z0-9_.-]+$'
+	then
+		filter_by_repo_full_name
+	elif echo "${1}" | grep -iEq '^[a-z0-9_.-]+$'
+	then
+		filter_by_repo_name "${1}"
+	else
+		die "invalid repository: ${1}"
 	fi
 }
 
 filter_by_subject_type() {
-	if [ "${FILTER_TYPE}" ]
+	if [ ! "${1}" ]
 	then
-		case "${FILTER_TYPE}" in
-			pr | pull_request ) filter_is_pull_request ;;
-			disc | discussion ) filter_is_discussion   ;;
-			release           ) filter_is_release      ;;
-			*                 ) die "unknown type '${FILTER_TYPE}'" ;;
-		esac
-	else
 		cat
+	else
+		case "$(echo "${1}" | tr '[:upper:]' '[:lower:]')" in
+
+			# Match possible ways of specifying the type
+			p | pull       | pulls       ) filter_is_pull_request ;;
+			i | issue      | issues      ) filter_is_issue        ;;
+			v | invite     | invites     ) filter_is_invite       ;;
+			c | commit     | commits     ) filter_is_commit       ;;
+			d | discussion | discussions ) filter_is_discussion   ;;
+			r | release    | releases    ) filter_is_release      ;;
+			k | check      | checks      ) filter_is_check_suite  ;;
+
+			# Anything else isn't a known type
+			*) die "unknown type: ${1}" ;;
+		esac
 	fi
 }
 
 get_threads() {
-	gh api /notifications | filter_by_subject_type | filter_by_repo
+	gh api "/notifications" | \
+	filter_by_subject_type "${FILTER_TYPE}" | \
+	filter_by_repo "${FILTER_REPO}"
 }
 
 tabulate_threads() {
@@ -145,53 +193,61 @@ tabulate_threads() {
 		--raw-output \
 		'.[] | ( .repository.full_name + "|" + .subject.type + "|" + .subject.title )' | \
 	column \
-		--table \
 		--separator "|" \
+		--table \
 		--table-columns \
 		"REPOSITORY,NOTIFICATION TYPE,TITLE"
 }
 
 main_view() {
-	while [ "$#" -gt 0 ]
-	do
-		case "$1" in
-			-h | --help ) usage view            ; exit  ;;
-
-			-r | --repo ) FILTER_REPO="$2"      ; shift ;;
-			--repo=*    ) FILTER_REPO="${1#*=}" ;       ;;
-
-			-t | --type ) FILTER_TYPE="$2"      ; shift ;;
-			--type=*    ) FILTER_TYPE="${1#*=}" ;       ;;
-
-			-*          ) die "unknown option '$1'"     ;;
-			*           ) die "unknown argument '$1'"   ;;
-		esac
-
-		shift
-	done
-
 	get_threads | tabulate_threads
 }
 
 main_done() {
+	# TODO: get_threads | mark_threads_as_done
 	die "UNIMPLEMENTED"
 }
 
 main() {
+	# Show usage if nothing was requested
 	if [ "$#" -lt 1 ]
 	then
 		usage
 		exit 1
 	fi
 
+	# Take the first arg as the subcommand to run
 	COMMAND="$1"
 	shift
 
+	# Validate that the subcommand is known (or asking for help)
 	case "$COMMAND" in
-		-h | --help | help ) usage "$1"                               ;;
-		view | done        ) main_$COMMAND $*                         ;;
+		-h | --help | help ) usage "$1" ; exit ;;
+		view | done        ) ;; # Command is known, carry on
 		*                  ) usage ; die "unknown command '$COMMAND'" ;;
 	esac
+
+	# Parse common arguments
+	while [ "$#" -gt 0 ]
+	do
+		case "$1" in
+			-h   | --help   ) usage "${COMMAND}"    ; exit  ;;
+
+			-r   | --repo   ) FILTER_REPO="$2"      ; shift ;;
+			-r=* | --repo=* ) FILTER_REPO="${1#*=}" ;       ;;
+
+			-t   | --type   ) FILTER_TYPE="$2"      ; shift ;;
+			-t=* | --type=* ) FILTER_TYPE="${1#*=}" ;       ;;
+
+			-* ) die "unknown option '$1'"   ;;
+			*  ) break ;; # stop loop, remaining args go to command
+		esac
+
+		shift
+	done
+
+	# Run the selected command and pass through remaining args
+	"main_${COMMAND}" $*
 }
 
 main $@
