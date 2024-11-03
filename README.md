@@ -2,4 +2,4 @@
 
 GitHub CLI Notification Management
 
-<img src="https://humanmademark.com/automatic-logo.svg" height="50" />
+<img src="https://raw.githubusercontent.com/norwd/human/refs/heads/main/docs/automatic-logo.svg" height="50" />
